@@ -114,8 +114,13 @@ BEGIN
 			FROM sys.partitions  
 			WHERE object_id = @objectid AND index_id = @indexid;
 		
-		--If fragmentation is below lower limit, no action is taken on the index
-		IF @frag > @ReorganizeLowerLimit  
+		/*
+		-Is reorganized toggled and is the fragmentation enough enough to consider
+		 acting on it? If not is the fragmentation at least equal to the threshold
+		 for rebuilding it. If neither condition is met, don't act on the index.
+		*/ 
+		IF (@ReorganizeLowerLimit IS NOT NULL AND @frag > @ReorganizeLowerLimit) OR
+			(@frag > @Threshold)  
 		BEGIN
 			-- Determine appropriate action to take
 			IF @ReorganizeLowerLimit IS NOT NULL 
@@ -126,7 +131,7 @@ BEGIN
 			SET @command = N'ALTER INDEX' + @indexname + N' ON ' + @schemaname + 
 				N'.' + @objectname + @action;
 
-			-- Reorganize is always performed online, if command is rebuild it must be toggled
+			-- Reorganize is always performed online, if command is REBUILD it must be toggled
 			IF @ReorganizeLowerLimit IS NULL
 				SET @command = @command + N'WITH (ONLINE = ON)';
 
