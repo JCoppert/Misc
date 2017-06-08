@@ -1,6 +1,5 @@
 USE [HALOCOREDB]
 GO
-/****** Object:  StoredProcedure [UTIL].[db_defrag]    Script Date: 6/7/2017 2:48:29 PM ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -49,7 +48,7 @@ BEGIN
 
 	/* FOR TESTING TO TARGET THE FIRST RETURNED TABLE
 	DECLARE @increment int;
-        SET @increment = 0;*/ 
+    SET @increment = 0;*/ 
 	
 	/*
 	-Retrieve pertinent defrag information from MS stored 
@@ -80,11 +79,18 @@ BEGIN
 		WHERE (frag > @Threshold);
 
 	--Make the while condition @increment < 1 for testing
-	WHILE(1=1)
+	WHILE(@@FETCH_STATUS = 0)
 	BEGIN
 		
 		FETCH NEXT FROM IndexesCursor INTO @objectid, @indexid, @partitionnum, @frag;
-		IF @@FETCH_STATUS < 0 BREAK;
+
+		/*
+		-Is reorganized toggled and is the fragmentation enough enough to consider
+		 acting on it? If not is the fragmentation at least equal to the threshold
+		 for rebuilding it. If neither condition is met, don't act on the index.
+		*/ 
+		IF (@ReorganizeLowerLimit IS NOT NULL AND @frag < @ReorganizeLowerLimit) OR
+			(@ReorganizeLowerLimit IS NULL AND @frag < @Threshold) BREAK;
 
 		/*
 		-Get the schema and table names to initialize local variables, 
@@ -119,72 +125,64 @@ BEGIN
         SELECT @partitioncount = count (*)  
 			FROM sys.partitions  
 			WHERE object_id = @objectid AND index_id = @indexid;
+
+		-- Determine appropriate action to take
+		IF @ReorganizeLowerLimit IS NOT NULL 
+			IF @frag < @Threshold AND @frag > @ReorganizeLowerLimit
+				SET @action = N'REORGANIZE';
 		
-		/*
-		-Is reorganized toggled and is the fragmentation enough enough to consider
-		 acting on it? If not is the fragmentation at least equal to the threshold
-		 for rebuilding it. If neither condition is met, don't act on the index.
-		*/ 
-		IF (@ReorganizeLowerLimit IS NOT NULL AND @frag > @ReorganizeLowerLimit) OR
-			(@frag > @Threshold)  
-		BEGIN
-			-- Determine appropriate action to take
-			IF @ReorganizeLowerLimit IS NOT NULL 
-				IF @frag < @Threshold AND @frag > @ReorganizeLowerLimit
-					SET @action = N'REORGANIZE';
+		-- Build dynamic query string
+		SET @command = N'ALTER INDEX' + @indexname + N' ON ' + @schemaname + 
+			N'.' + @objectname + @action;
+
+		-- Reorganize is always performed online, if command is REBUILD it must be toggled
+		IF @ReorganizeLowerLimit IS NULL
+			SET @command = @command + N' WITH (ONLINE = ON)';
+
+		/* When acting on the index you must also take into consideration existing 
+			partitions */
+		IF @partitioncount > 1
+			SET @command = @command + N' PARTITION=' + CAST(@partitionnum AS nvarchar(10));
 		
-			-- Build dynamic query string
-			SET @command = N'ALTER INDEX' + @indexname + N' ON ' + @schemaname + 
-				N'.' + @objectname + @action;
+		-- Execute rebuild or reorganization
+		EXEC (@command);
 
-			-- Reorganize is always performed online, if command is REBUILD it must be toggled
-			IF @ReorganizeLowerLimit IS NULL
-				SET @command = @command + N' WITH (ONLINE = ON)';
+		-- Update associated index statistics
+		SET @command2 = 'UPDATE STATISTICS ' + @schemaname + N'.' + @objectname + ' ' 
+			+ @indexname;
+		EXEC (@command2);
 
-			/* When acting on the index you must also take into consideration existing 
-			   partitions */
-			IF @partitioncount > 1
-				SET @command = @command + N' PARTITION=' + CAST(@partitionnum AS nvarchar(10));
+		-- Output and bookkeeping
+		PRINT N'Updated statistics on' + @objectname + N' and executed ' + @command;
+		PRINT N'Fragmentation before ' + @action + N' was ' + Str(@frag) + N'%';
+		PRINT '----------------------------------------------------------------------'
+		SET @indexCount = @indexCount + 1;
+			
+		--Populate temp table to gather fragmentation after action taken
+		SELECT object_id AS objectid, index_id AS indexid, partition_number AS pn, avg_fragmentation_in_percent AS frag
+			INTO #mostRecentlyUpdated
+			FROM sys.dm_db_index_physical_stats(DB_ID(), @objectid, @indexid, NULL, DEFAULT)
+			WHERE object_id = @objectid AND index_id = @indexid AND partition_number = @partitionnum;
+			
+		/*Get post action value of fragmentation, I believe this to work. Values are different when I query the fragmentation
+		of the index following the stored procedure. I suspect this to be to traffic intercepting the table before I can run my
+		query
+		*/
+		SELECT @postActionFragmentationValue = COUNT(frag) FROM #mostRecentlyUpdated; 
+			
+		--Arithmetic
+		SET @totalFragmentationPercentReduction = @totalFragmentationPercentReduction 
+			+ (@frag - @postActionFragmentationValue);
+
+		PRINT STR(@postActionFragmentationValue);
+
+		--Deallocate
+		DROP TABLE #mostRecentlyUpdated;
+
+
+		--FOR TESTING (see above):   
+		--SET @increment = 1;
 		
-			-- Execute rebuild or reorganization
-			EXEC (@command);
-
-			-- Update associated index statistics
-			SET @command2 = 'UPDATE STATISTICS ' + @schemaname + N'.' + @objectname + ' ' 
-				+ @indexname;
-			EXEC (@command2);
-
-			-- Output and bookkeeping
-			PRINT N'Updated statistics on' + @objectname + N' and executed ' + @command;
-			PRINT N'Fragmentation before ' + @action + N' was ' + Str(@frag) + N'%';
-			PRINT '----------------------------------------------------------------------'
-			SET @indexCount = @indexCount + 1;
-			
-			--Populate temp table to gather fragmentation after action taken
-			SELECT object_id AS objectid, index_id AS indexid, partition_number AS pn, avg_fragmentation_in_percent AS frag
-				INTO #mostRecentlyUpdated
-				FROM sys.dm_db_index_physical_stats(DB_ID(), @objectid, @indexid, NULL, DEFAULT)
-				WHERE object_id = @objectid AND index_id = @indexid AND partition_number = @partitionnum;
-			
-			/*Get post action value of fragmentation, I believe this to work. Values are different when I query the fragmentation
-			of the index following the stored procedure. I suspect this to be to traffic intercepting the table before I can run my
-			query
-			*/
-			SELECT @postActionFragmentationValue = COUNT(frag) FROM #mostRecentlyUpdated; 
-			
-			--Arithmetic
-			SET @totalFragmentationPercentReduction = @totalFragmentationPercentReduction 
-				+ (@frag - @postActionFragmentationValue);
-
-			PRINT STR(@postActionFragmentationValue);
-
-			--Deallocate
-			DROP TABLE #mostRecentlyUpdated;
-
-
-			--FOR TESTING (see above):   
-			--SET @increment = 1;
-		END
 
 		SET @totalFragmentation = @totalFragmentation + @frag;
 
