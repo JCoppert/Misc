@@ -47,9 +47,9 @@ BEGIN
 	DECLARE @postActionFragmentationValue float;
 	DECLARE @result nvarchar(4000);
 
-	/* FOR TESTING TO TARGET THE FIRST RETURNED TABLE*/
+	/* FOR TESTING TO TARGET THE FIRST RETURNED TABLE
 	DECLARE @increment int;
-    SET @increment = 0; 
+        SET @increment = 0;*/ 
 	
 	/*
 	-Retrieve pertinent defrag information from MS stored 
@@ -80,7 +80,7 @@ BEGIN
 		WHERE (frag > @Threshold);
 
 	--Make the while condition @increment < 1 for testing
-	WHILE(@increment < 1)
+	WHILE(1=1)
 	BEGIN
 		
 		FETCH NEXT FROM IndexesCursor INTO @objectid, @indexid, @partitionnum, @frag;
@@ -183,7 +183,7 @@ BEGIN
 
 
 			--FOR TESTING (see above):   
-			SET @increment = 1;
+			--SET @increment = 1;
 		END
 
 		SET @totalFragmentation = @totalFragmentation + @frag;
